@@ -81,9 +81,27 @@ EOF
 }
 
 setup_ssh() {
-    echo -e "${YELLOW}安装并配置 SSH...${NC}"
+    echo -e "${YELLOW}准备安装并配置 SSH...${NC}"
+    read -p "是否先更新软件包列表(apt update)以防依赖冲突? (y/n, 推荐 y): " UPDATE_APT
+    if [[ "$UPDATE_APT" != "n" && "$UPDATE_APT" != "N" ]]; then
+        echo -e "${YELLOW}正在更新软件包列表...${NC}"
+        apt update
+    fi
+
     export DEBIAN_FRONTEND=noninteractive
-    apt install openssh-server -y
+    echo -e "${YELLOW}开始安装 openssh-server...${NC}"
+    if ! apt install openssh-server -y; then
+        echo -e "${RED}SSH 安装失败！检测到依赖冲突。${NC}"
+        read -p "是否自动修复依赖 (apt --fix-broken install) 并重试? (y/n): " FIX_APT
+        if [[ "$FIX_APT" == "y" || "$FIX_APT" == "Y" ]]; then
+            apt --fix-broken install -y
+            apt install openssh-server -y
+        else
+            echo -e "${RED}已跳过 SSH 安装。${NC}"
+            sleep 2
+            return
+        fi
+    fi
     systemctl enable --now ssh
     read -p "是否允许 Root 远程登录? (y/n): " ROOT_SSH
     if [[ "$ROOT_SSH" == "y" ]]; then
@@ -95,9 +113,27 @@ setup_ssh() {
 }
 
 pve_optim() {
-    echo -e "${YELLOW}安装 QEMU Guest Agent & 开启 TRIM...${NC}"
+    echo -e "${YELLOW}准备安装 QEMU Guest Agent & 开启 TRIM...${NC}"
+    read -p "是否先更新软件包列表(apt update)以防依赖冲突? (y/n, 推荐 y): " UPDATE_APT
+    if [[ "$UPDATE_APT" != "n" && "$UPDATE_APT" != "N" ]]; then
+        echo -e "${YELLOW}正在更新软件包列表...${NC}"
+        apt update
+    fi
+
     export DEBIAN_FRONTEND=noninteractive
-    apt install qemu-guest-agent -y
+    echo -e "${YELLOW}开始安装 qemu-guest-agent...${NC}"
+    if ! apt install qemu-guest-agent -y; then
+        echo -e "${RED}QEMU Guest Agent 安装失败！检测到依赖冲突。${NC}"
+        read -p "是否自动修复依赖 (apt --fix-broken install) 并重试? (y/n): " FIX_APT
+        if [[ "$FIX_APT" == "y" || "$FIX_APT" == "Y" ]]; then
+            apt --fix-broken install -y
+            apt install qemu-guest-agent -y
+        else
+            echo -e "${RED}已跳过 PVE 优化。${NC}"
+            sleep 2
+            return
+        fi
+    fi
     systemctl enable --now qemu-guest-agent
     systemctl enable --now fstrim.timer
     fstrim -av
@@ -125,7 +161,18 @@ install_node() {
     echo -e "${YELLOW}安装全局 Node.js LTS (通过 NodeSource)...${NC}"
     export DEBIAN_FRONTEND=noninteractive
     curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
-    apt install -y nodejs
+    if ! apt install -y nodejs; then
+        echo -e "${RED}Node.js 安装失败！检测到依赖冲突。${NC}"
+        read -p "是否自动修复依赖 (apt --fix-broken install) 并重试? (y/n): " FIX_APT
+        if [[ "$FIX_APT" == "y" || "$FIX_APT" == "Y" ]]; then
+            apt --fix-broken install -y
+            apt install -y nodejs
+        else
+            echo -e "${RED}已跳过 Node.js 安装。${NC}"
+            sleep 2
+            return
+        fi
+    fi
     echo -e "${GREEN}Node.js 安装完成!${NC}"
     sleep 2
 }
