@@ -29,6 +29,7 @@ show_menu() {
     echo -e "6. 安装 Docker (阿里云加速)"
     echo -e "7. 安装 Node.js LTS (OpenClaw 需求)"
     echo -e "8. 执行全部优化 (1, 3, 4, 5)"
+    echo -e "9. 修复因旧版脚本导致的软件源和依赖损坏问题"
     echo -e "0. 退出脚本"
     echo -e "${GREEN}=============================================${NC}"
 }
@@ -37,8 +38,13 @@ change_sources() {
     echo -e "${YELLOW}正在备份并修改软件源...${NC}"
     SOURCE_FILE="/etc/apt/sources.list.d/ubuntu.sources"
     [ -f "$SOURCE_FILE" ] && cp "$SOURCE_FILE" "${SOURCE_FILE}.bak"
-    sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' "$SOURCE_FILE"
-    sed -i 's/security.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' "$SOURCE_FILE"
+    
+    # 修复包含 cn. 前缀时被错误替换为 cn.mirrors.tuna... 的问题
+    sed -i -E 's/(cn\.)?archive\.ubuntu\.com/mirrors.tuna.tsinghua.edu.cn/g' "$SOURCE_FILE"
+    sed -i -E 's/(cn\.)?security\.ubuntu\.com/mirrors.tuna.tsinghua.edu.cn/g' "$SOURCE_FILE"
+    # 纠正如果之前已经错误执行过脚本而留下的瞎造域名
+    sed -i 's/cn.mirrors.tuna.tsinghua.edu.cn/mirrors.tuna.tsinghua.edu.cn/g' "$SOURCE_FILE"
+    
     apt update && echo -e "${GREEN}换源成功!${NC}"
     sleep 2
 }
@@ -177,9 +183,24 @@ install_node() {
     sleep 2
 }
 
+repair_env() {
+    echo -e "${YELLOW}正在尝试修复因旧版脚本生成的错误软件源和断裂的依赖关系...${NC}"
+    SOURCE_FILE="/etc/apt/sources.list.d/ubuntu.sources"
+    if [ -f "$SOURCE_FILE" ]; then
+        sed -i 's/cn.mirrors.tuna.tsinghua.edu.cn/mirrors.tuna.tsinghua.edu.cn/g' "$SOURCE_FILE"
+        echo -e "${GREEN}已移除错误添加的 cn.mirrors 前缀。${NC}"
+    fi
+    echo -e "${YELLOW}正在更新软件包列表...${NC}"
+    apt update
+    echo -e "${YELLOW}正在尝试修复依赖关系...${NC}"
+    apt --fix-broken install -y
+    echo -e "${GREEN}修复完成。如果刚刚修复成功，您可以重新选择之前的安装项（如选项 3 安装 SSH）。${NC}"
+    sleep 3
+}
+
 while true; do
     show_menu
-    read -p "请输入选项 [0-8]: " choice
+    read -p "请输入选项 [0-9]: " choice
     case $choice in
         1) change_sources ;;
         2) set_static_ip ;;
@@ -196,6 +217,7 @@ while true; do
            echo -e "${GREEN}基础全自动化优化已完成!${NC}"
            sleep 3
            ;;
+        9) repair_env ;;
         0) exit 0 ;;
         *) echo -e "${RED}无效选项!${NC}" ; sleep 1 ;;
     esac
