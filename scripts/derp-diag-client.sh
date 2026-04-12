@@ -28,19 +28,19 @@ step() {
 }
 
 info()  { echo "[INFO]  $1" | tee -a "$LOG"; }
-pass()  { echo "[PASS]  $1" | tee -a "$LOG"; }
+pass()  { echo "[ OK ]  $1" | tee -a "$LOG"; }
 fail()  { echo "[FAIL]  $1" | tee -a "$LOG"; }
 
 wait_server() {
     echo ""
     echo ">>> 确认服务端已准备好，按 Enter 执行测试 <<<"
-    read -r DUMMY
+    read -r _
 }
 
 next_exp() {
     echo ""
     echo "回到服务端按 Enter，然后回来按 Enter 进入下一实验..."
-    read -r DUMMY
+    read -r _
 }
 
 # 测试 TLS（不用 logrun，直接捕获输出和退出码）
@@ -81,24 +81,25 @@ test_tcp() {
     info "--- $label ---"
     info "命令: nc ${SERVER_IP} ${port} (5s timeout)"
     log ">>>>>>>>"
-    # busybox nc 不支持 -w，用 timeout 或后台+sleep 替代
+    # busybox nc 不支持 -w，用 timeout 或后台+wait 替代
     if command -v timeout >/dev/null 2>&1; then
         RESULT=$(echo "test" | timeout 5 nc "$SERVER_IP" "$port" 2>&1)
+        rc=$?
     else
-        # 无 timeout 命令时的 fallback
         echo "test" | nc "$SERVER_IP" "$port" &
         NC_BG=$!
         sleep 3
-        RESULT=""
         if kill -0 $NC_BG 2>/dev/null; then
             kill $NC_BG 2>/dev/null
-            RESULT="(timeout - nc still running after 3s)"
-        else
             wait $NC_BG 2>/dev/null
-            RESULT="(nc exited)"
+            RESULT="(timeout - nc still running after 3s)"
+            rc=1
+        else
+            wait $NC_BG
+            rc=$?
+            RESULT="(nc exited with $rc)"
         fi
     fi
-    rc=$?
     log "$RESULT"
     log "<<<<<<<<"
     log "exit_code=$rc"
@@ -156,8 +157,12 @@ info "--- Tailscale 状态 ---"
 logrun tailscale status
 log ""
 
-info "--- tailscale netcheck ---"
-logrun tailscale netcheck
+info "--- tailscale netcheck (30s timeout) ---"
+if command -v timeout >/dev/null 2>&1; then
+    timeout 30 tailscale netcheck 2>&1 | tee -a "$LOG" || log "(netcheck timed out or failed)"
+else
+    logrun tailscale netcheck
+fi
 log ""
 
 # ═══════════════════════════════════════════
