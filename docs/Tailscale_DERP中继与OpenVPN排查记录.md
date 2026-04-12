@@ -520,7 +520,7 @@ gl-mt2500-3 → 公网 → Nuremberg DERP (德国) → 公网 → istoreos
    ```
 5. 启动 socat TLS 终结：
    ```bash
-   socat OPENSSL-LISTEN:12345,cert=/etc/nginx/derp.crt,key=/etc/nginx/derp.key,reuseaddr,fork TCP:127.0.0.1:8080 &
+   socat OPENSSL-LISTEN:12345,cert=/etc/nginx/derp.crt,key=/etc/nginx/derp.key,verify=0,reuseaddr,fork TCP:127.0.0.1:8080 &
    ```
 6. 手动验证 TLS 可达：
    ```bash
@@ -867,7 +867,7 @@ After=network.target docker.service
 Requires=docker.service
 
 [Service]
-ExecStart=/usr/bin/socat OPENSSL-LISTEN:443,cert=/etc/nginx/derp.crt,key=/etc/nginx/derp.key,reuseaddr,fork TCP:127.0.0.1:8080
+ExecStart=/usr/bin/socat OPENSSL-LISTEN:443,cert=/etc/nginx/derp.crt,key=/etc/nginx/derp.key,verify=0,reuseaddr,fork TCP:127.0.0.1:8080
 Restart=always
 RestartSec=5
 
