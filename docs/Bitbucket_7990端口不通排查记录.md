@@ -191,6 +191,79 @@ iptables -t nat -A POSTROUTING -d 192.168.199.0/24 -o tailscale0 -j MASQUERADE
 
 同理 `/etc/rc.local` 也建议改为幂等写法。
 
+## 后续排查：OpenVPN 客户端路由失效（2026-04-13）
+
+### 问题
+
+家庭侧 Win11 PC（192.168.2.115）通过 OpenVPN 连接 gl-mt2500-3，无法 ping 通 192.168.199.126。22 服务器（走 LAN）可正常访问同一地址。
+
+### 排查过程
+
+1. **VPN 连通性确认**：PC 能 ping 10.8.0.1（VPN 网关），VPN 隧道正常
+2. **redirect-gateway 确认**：`route print` 显示 0.0.0.0/1 和 128.0.0.0/1 via 10.8.0.1，redirect-gateway def1 生效
+3. **push route 失效**：`server.ovpn` 有 `push "route 192.168.199.0 ..."` 但 PC 路由表无此条目。GL-iNet OpenVPN 界面开启了"自定义路由规则模式"，该模式下客户端忽略服务端推送的路由
+4. **手动加路由**：PC 上 `route add 192.168.199.0 mask 255.255.255.0 10.8.0.1`，初次加到了物理网卡（192.168.2.1）；修改客户端 `.ovpn` 加 `route 192.168.199.0 255.255.255.0 vpn_gateway` 后路由正确指向 VPN 接口
+5. **路由正确但包不进隧道**：
+
+   | 测试 | 结果 |
+   |------|------|
+   | ping 8.8.8.8 (via VPN) | ✅ 通，tcpdump 在 ovpnserver 看到包 |
+   | ping 100.105.216.126 (istoreos TS IP, via VPN) | ✅ 通，15ms |
+   | ping 192.168.199.126 (via VPN) | ❌ 超时，tcpdump -i any 无包 |
+
+6. **Windows 路由确认**：`Find-NetRoute -RemoteIPAddress 192.168.199.126` 显示正确选择 VPN 接口（InterfaceIndex 10, NextHop 10.8.0.1）
+7. **Windows 防火墙排除**：关闭防火墙后仍超时
+8. **结论**：Windows OpenVPN TAP/TUN 驱动对 192.168.x.x 地址段存在兼容性问题，包在 PC 本机 VPN 驱动层被丢弃，不进入隧道。其他地址段（8.8.8.8、100.x.x.x）通过同一 VPN 正常转发
+
+### 解决方案：PC 安装 Tailscale + istoreos 子网路由
+
+放弃 OpenVPN 路径，PC 直接加入 Tailscale 网络，通过 istoreos 的子网路由访问 192.168.199.0/24。
+
+**istoreos 操作：**
+
+```bash
+# 开启子网路由广播
+tailscale up --advertise-routes=192.168.199.0/24
+```
+
+**Tailscale Admin 操作：**
+
+访问 https://login.tailscale.com/admin/machines，找到 istoreos，批准子网路由（Approve subnet routes）。
+
+**PC 操作：**
+
+1. 安装 [Tailscale Windows 客户端](https://tailscale.com/download/windows)
+2. 登录同一 tailnet（dff652@）
+3. 系统托盘右键 Tailscale → 确认 **Use Tailscale Subnets** 已勾选
+
+**验证：**
+
+```cmd
+tailscale status | findstr istoreos
+tailscale ping 100.105.216.126
+ping 192.168.199.126
+```
+
+**结果（2026-04-13）：**
+
+```
+tailscale status: istoreos  active; relay "ali-bj-hb2"
+tailscale ping:   pong via DERP(ali-bj-hb2) in 15ms
+ping 192.168.199.126: 回复 时间=41ms TTL=60
+```
+
+完整链路：`PC (Tailscale) → DERP(ali-bj-hb2, 15ms) → istoreos → 192.168.199.126`
+
+### 新旧方案对比
+
+| | OpenVPN 方案 | Tailscale 方案 |
+|--|--|--|
+| 链路 | PC → OpenVPN → gl-mt2500-3 → Tailscale → istoreos → 目标 | PC → Tailscale → DERP → istoreos → 目标 |
+| 跳数 | 4 跳（OpenVPN + 旁路由转发 + Tailscale + istoreos） | 2 跳（DERP 中继 + istoreos） |
+| 延迟 | 不可用（Windows TAP 驱动丢包） | ~41ms |
+| 配置 | 复杂（push route + 策略路由 + MASQUERADE） | 简单（子网路由 + 客户端勾选） |
+| 依赖 | gl-mt2500-3 旁路由必须在线 | 仅依赖 DERP 和 istoreos |
+
 ## 维护脚本
 
 已编写交互式检查修复脚本 `gl-mt2500-network-check.sh`，存放于 `/home/dff652/文档/` 目录。

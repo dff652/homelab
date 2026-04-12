@@ -1095,12 +1095,23 @@ tailscale status:
 - [ ] **OpenVPN 客户端证书泄露**：istoreos 的私钥和 TLS 密钥在终端输出，需重新生成
 - [ ] **derper Go TLS internal error**：derper 用 letsencrypt 模式在非 443 端口 TLS 报错，当前通过 socat 绕过，非阻塞
 - [ ] **OpenClash init 脚本状态不同步**：进程在跑但 stop 报 Already Stop，restart 无效
+- [ ] **Win11 OpenVPN TAP 驱动丢弃 192.168.x.x**：已通过 PC 安装 Tailscale + istoreos 子网路由绕过，OpenVPN 路径弃用
 
 **P2（技术债务）**：
 - [ ] **server.ovpn server 行格式异常**：`server  255.255.255.0` 缺少网段地址
 - [ ] **firewall.user 规则幂等化**
 - [ ] **bj-ali-hb2 残留服务清理**：旧 derper 容器 + nginx + kspeeder (5443/5003)
 - [ ] **bj-ali-hb2 安全扫描暴露面大**：pcap 显示大量外部 IP 扫描 443 端口
+
+### 额外成果：PC 通过 Tailscale 访问公司内网（2026-04-13）
+
+家庭侧 Win11 PC 安装 Tailscale 加入 tailnet，istoreos 开启子网路由广播（`tailscale up --advertise-routes=192.168.199.0/24`），PC 通过 DERP(ali-bj-hb2) → istoreos 子网路由访问 192.168.199.0/24 网段。
+
+```
+PC → Tailscale → DERP(ali-bj-hb2, 15ms) → istoreos → 192.168.199.126 (41ms)
+```
+
+此方案替代了之前的 OpenVPN 路径（PC → OpenVPN → gl-mt2500-3 → Tailscale → istoreos），跳数更少、配置更简单、不依赖 gl-mt2500-3 旁路由。详见 `docs/Bitbucket_7990端口不通排查记录.md`。
 
 ---
 
