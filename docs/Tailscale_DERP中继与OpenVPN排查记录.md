@@ -1029,11 +1029,34 @@ tailscale ping istoreos:
   pong from istoreos via DERP(ali-bj-hb2) in 14ms  ← 目标 <20ms 达成
 ```
 
-#### 待持久化
+#### 持久化部署（已完成 2026-04-12）
 
-- [ ] derper 容器：改为 `--restart=always`
-- [ ] socat：创建 systemd 服务 `derp-tls.service`
-- [ ] 证书续期：当前证书 2026-07-11 到期，需确认续期路径
+使用 `scripts/deploy-derp.sh deploy` 一键部署：
+
+- [x] derper 容器：`--restart=always`，名称 `derper`
+- [x] socat：systemd 服务 `derp-tls.service`，`enable --now`
+- [ ] 证书续期：当前证书 2026-07-11 到期，届时执行 `sh deploy-derp.sh renew`
+
+**最终验证结果（2026-04-12 21:10 CST）：**
+
+```
+tailscale netcheck:
+  Nearest DERP: Aliyun Beijing Relay
+  ali-bj-hb2: 9.1ms                    ← STUN 延迟
+
+tailscale ping istoreos:
+  pong via DERP(ali-bj-hb2) in 15-16ms ← 目标 <20ms 达成
+
+tailscale status:
+  bj-ali-hb2:  active; direct 39.102.98.79:41641
+  istoreos:    active; relay "ali-bj-hb2"    ← 已切到自建 DERP
+```
+
+| 指标 | 之前 | 之后 | 改善 |
+|------|------|------|------|
+| DERP 中继 | nue (德国纽伦堡) | ali-bj-hb2 (北京阿里云) | 国内直连 |
+| ping istoreos | ~468ms | ~15ms | **97% 降低** |
+| Nearest DERP | San Francisco 348ms | Aliyun Beijing 9ms | **97% 降低** |
 
 ---
 
