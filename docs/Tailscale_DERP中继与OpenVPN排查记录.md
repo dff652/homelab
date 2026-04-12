@@ -777,19 +777,126 @@ Exited (1) 5 seconds ago
 4. 客户端 nc 兼容 busybox（去掉 `-w` 参数）
 5. 客户端 curl 退出码改用 `$()` 捕获（不再经过 tee pipe）
 
-### 第二轮待执行
+### 第二轮测试计划
 
 **核心问题：derper Go TLS 从外部到底能不能连？（上一轮因端口冲突未得到答案）**
 
-实验计划不变（6 组对照），使用 v2 脚本。如果实验 2 通、实验 3 不通，增加 OpenClash 排除测试：
+#### 步骤 1：v2 脚本 6 组对照实验
 
 ```bash
-# gl-mt2500-3 临时关闭 OpenClash
+# 部署（从 22 服务器）
+scp scripts/derp-diag-server.sh root@39.102.98.79:/tmp/
+scp scripts/derp-diag-client.sh root@192.168.2.123:/tmp/
+
+# 终端 B — 阿里云服务端
+ssh root@39.102.98.79 'sh /tmp/derp-diag-server.sh'
+
+# 终端 C — 家庭路由客户端
+ssh root@192.168.2.123 'sh /tmp/derp-diag-client.sh'
+```
+
+**验收标准：** 每个实验开始前服务端日志必须有 `[ OK ] 端口 443 已清空`，实验 3 derper 日志不能有 `address already in use`。
+
+#### 步骤 2：根据结果决策
+
+| 实验 2 (openssl) | 实验 3 (derper) | 判定 | 执行步骤 3 的内容 |
+|---|---|---|---|
+| 通 | 通 | derper 正常，之前问题已自愈 | 跳到步骤 4 恢复 DERP |
+| 通 | 不通 | Go TLS 被干扰（DPI 或 OpenClash） | 步骤 3A + 3B |
+| 不通 | 不通 | 客��端侧有问题（大概率 OpenClash） | 步骤 3A |
+| 不通 | 不通 且 实验 5 通 | socat 方案可行 | 步骤 3C |
+
+#### 步骤 3A：OpenClash 排除测试（如果实验 2 或 3 不通）
+
+在 gl-mt2500-3 上临时关闭 OpenClash，用同样的 curl 命令重测：
+
+```bash
+# gl-mt2500-3 — 关闭 OpenClash（影响：该路由下所有设备暂时无法翻墙）
 /etc/init.d/openclash stop
+
+# 重测实验 2 的场景（服务端需提前启动 openssl s_server）
 curl -vk --connect-timeout 5 https://39.102.98.79:443
 curl -vk --connect-timeout 5 https://derp.wcdz.tech:443
+
+# 重测实验 3 的场景（服务端需启动 derper on 443）
+curl -vk --connect-timeout 5 https://39.102.98.79:443
+curl -vk --connect-timeout 5 https://derp.wcdz.tech:443
+
+# 恢复 OpenClash
 /etc/init.d/openclash start
 ```
+
+**判断：**
+- 关 OpenClash 后全通 → **OpenClash 是根因**，需配置白名单或旁路规则
+- 关 OpenClash 后仍不通 → 排除 OpenClash，问题在��务端或链路中间设备
+
+#### 步骤 3B：从其他设备交叉验证（如果需要进一步隔离）
+
+从 22 服务器（192.168.2.22，网关指向 gl-mt2500-3）或手机热点直接测试，排除 gl-mt2500-3 本机环境的干扰：
+
+```bash
+# 22 服务器（走 gl-mt2500-3 旁路由出网）
+curl -vk --connect-timeout 5 https://39.102.98.79:443
+curl -vk --connect-timeout 5 https://derp.wcdz.tech:443
+
+# 如果 22 服务器也不通，临时改网关直连主路由绕过旁路由：
+sudo ip route replace default via 192.168.2.1 dev eth0
+curl -vk --connect-timeout 5 https://derp.wcdz.tech:443
+# 测完恢复
+sudo ip route replace default via 192.168.2.123 dev eth0
+```
+
+#### 步骤 3C：socat 方案部署（如果实验 5 验证通过）
+
+```bash
+# bj-ali-hb2 上部署
+# 1. derper HTTP 模式
+docker run -d --name derper --restart=always --network=host \
+    -e DERP_DOMAIN=derp.wcdz.tech \
+    -e DERP_CERT_MODE=letsencrypt \
+    -e DERP_ADDR=:8080 \
+    -e DERP_STUN=true \
+    -e DERP_VERIFY_CLIENTS=false \
+    registry.linkease.net:5443/fredliang/derper:latest
+
+# 2. socat TLS 终结（持久化为 systemd 服务）
+cat > /etc/systemd/system/derp-tls.service <<'EOF'
+[Unit]
+Description=DERP TLS termination (socat)
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+ExecStart=/usr/bin/socat OPENSSL-LISTEN:443,cert=/etc/nginx/derp.crt,key=/etc/nginx/derp.key,reuseaddr,fork TCP:127.0.0.1:8080
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now derp-tls
+```
+
+#### 步骤 4：恢复 DERP ACL 并验证端到端
+
+```bash
+# 修改 Tailscale ACL (https://login.tailscale.com/admin/acls)
+# DERPPort: 99999 → 443（或实验 5 场景下仍为 443）
+
+# 等待 2-3 分钟让所有节点拉取新 DERP map
+
+# gl-mt2500-3 验证
+tailscale netcheck                    # 确认 ali-bj-hb2 有延迟数据
+tailscale ping istoreos               # 期望: via DERP(ali-bj-hb2) in <20ms
+tailscale ping bj-ali-hb2             # 期望: direct 或 via DERP <20ms
+
+# istoreos 验证
+tailscale ping gl-mt2500-3            # 期望: via DERP(ali-bj-hb2) in <20ms
+```
+
+**最终目标验收：** `tailscale ping istoreos` 延迟从 ~468ms 降至 <20ms。
 
 ---
 
