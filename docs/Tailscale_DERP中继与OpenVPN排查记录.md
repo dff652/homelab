@@ -962,17 +962,78 @@ curl -vk https://derp.wcdz.tech:443  # 仍然 reset
 4. 服务端 pcap 显示 SYN 到达 → 不是出站被拦
 5. 唯一变量：TLS ClientHello 中的 SNI 值
 
-#### 解决方案：换域名
+#### 进一步验证：IP 被标记，非仅域名
 
-不含 `derp`/`vpn`/`proxy`/`tunnel` 等 VPN 特征关键词的新域名即可绕过 DPI。
+换域名 `gw1.wcdz.tech`（DNS A → 39.102.98.79）后仍被 reset。进一步测试发现 DPI 封锁已升级：
 
-步骤：
-1. 新建 DNS A 记录：`<新域名>` → `39.102.98.79`
-2. bj-ali-hb2 上为新域名获取 Let's Encrypt 证书
-3. 更新 socat 证书路径 + derper DERP_DOMAIN
-4. 更新 Tailscale ACL derpMap 的 HostName
-5. 验证：`curl -vk https://<新域名>:443` 从 gl-mt2500-3 成功
-6. 恢复 DERPPort，验证 `tailscale ping istoreos` < 20ms
+| 测试 | 结果 |
+|------|------|
+| `gw1.wcdz.tech` | ❌ reset |
+| `gw1.wcdz.tech` (--resolve 绕 DNS) | ❌ reset |
+| `hello.example.org` → 同 IP (--resolve) | ❌ reset |
+| `39.102.98.79` IP 直连 | ✅ 成功 |
+| 8443 端口 + 域名 | ❌ reset |
+
+**修正后的结论：ISP DPI 已将 IP `39.102.98.79` 标记，对该 IP 的所有端口、所有带域名 SNI 的 TLS 连接注入 RST。仅裸 IP 连接（TLS ClientHello 无域名 SNI）不受影响。**
+
+> 注：之前 `test.example.com` 能通是因为当时 OpenClash 恰好被杀且 iptables 残留规则已过期，属于窗口期现象。后续 OpenClash 重启后重建 iptables 规则，叠加 ISP DPI，导致所有域名连接均失败。
+
+#### 最终解决方案：IP 直连 + InsecureForTests
+
+绕过方式：Tailscale ACL 中 HostName 设为 IP 地址，Go TLS 不发送域名 SNI → DPI 无法匹配 → 放行。
+
+**Tailscale ACL derpMap 配置：**
+
+```jsonc
+{
+    "derpMap": {
+        "OmitDefaultRegions": false,
+        "Regions": {
+            "901": {
+                "RegionID": 901,
+                "RegionCode": "ali-bj",
+                "RegionName": "Aliyun Beijing Relay",
+                "Nodes": [{
+                    "Name": "1",
+                    "RegionID": 901,
+                    "HostName": "39.102.98.79",
+                    "IPv4": "39.102.98.79",
+                    "DERPPort": 443,
+                    "InsecureForTests": true
+                }]
+            }
+        }
+    }
+}
+```
+
+- `HostName: IP` → TLS ClientHello 无域名 SNI（RFC 6066：SNI 只放域名不放 IP）
+- `InsecureForTests: true` → 跳过证书域名验证（证书是 `derp.wcdz.tech`，连接目标是 IP）
+
+**服务端架构：**
+
+```
+客户端 Tailscale → TLS(:443) → socat(OpenSSL, verify=0) → TCP(:8080) → derper(HTTP+STUN)
+```
+
+部署脚本：`scripts/deploy-derp.sh`
+
+**验证结果（2026-04-12）：**
+
+```
+tailscale netcheck:
+  Nearest DERP: Aliyun Beijing Relay
+  ali-bj-hb2: 8.5ms
+
+tailscale ping istoreos:
+  pong from istoreos via DERP(ali-bj-hb2) in 14ms  ← 目标 <20ms 达成
+```
+
+#### 待持久化
+
+- [ ] derper 容器：改为 `--restart=always`
+- [ ] socat：创建 systemd 服务 `derp-tls.service`
+- [ ] 证书续期：当前证书 2026-07-11 到期，需确认续期路径
 
 ---
 
@@ -1004,8 +1065,8 @@ curl -vk https://derp.wcdz.tech:443  # 仍然 reset
 
 ### 未解决 — 按优先级排序
 
-**P0（阻塞最终目标）**：
-- [ ] **换域名绕过 SNI DPI**：新建不含 VPN 特征关键词的域名，获取证书，部署 socat + derper，更新 ACL。预期解决后延迟 < 20ms。
+**P0（已解决）**：
+- [x] **绕过 ISP SNI DPI**：Tailscale ACL 使用 IP 直连 + InsecureForTests，TLS ClientHello 不含域名 SNI，DPI 无法匹配。延迟从 468ms 降至 14ms。
 
 **P1（影响稳定性/安全性）**：
 - [ ] **OpenVPN 客户端证书泄露**：istoreos 的私钥和 TLS 密钥在终端输出，需重新生成

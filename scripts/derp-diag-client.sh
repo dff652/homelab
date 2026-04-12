@@ -1,56 +1,32 @@
 #!/bin/sh
 # DERP 中继诊断 — 客户端 (gl-mt2500-3)
-# 兼容 busybox ash (OpenWrt)
-# 部署：
-#   scp scripts/derp-diag-client.sh root@192.168.2.123:/tmp/
-#   ssh root@192.168.2.123 'sh /tmp/derp-diag-client.sh'
+# 子命令模式：可按顺序全跑，也可单项测试
+#
+# 用法：
+#   sh derp-diag-client.sh all             # 全部实验顺序执行
+#   sh derp-diag-client.sh test <1-6>      # 单项测试
+#   sh derp-diag-client.sh openclash       # OpenClash 开关对比测试
+#   sh derp-diag-client.sh snapshot        # 输出客户端环境快照
 
 SERVER_IP="39.102.98.79"
 SERVER_DOMAIN="derp.wcdz.tech"
 LOG="/tmp/derp-diag-client.log"
 
-# 清空日志
-: > "$LOG"
+# ── 日志 ──
+log()    { echo "$@" | tee -a "$LOG"; }
+logrun() { "$@" 2>&1 | tee -a "$LOG"; }
+step()   { log ""; log "══════════ $1 ══════════"; }
+info()   { log "[INFO]  $1"; }
+pass()   { log "[ OK ]  $1"; }
+fail()   { log "[FAIL]  $1"; }
 
-# 同时输出到终端和日志（兼容 ash，不用进程替换）
-log() {
-    echo "$@" | tee -a "$LOG"
-}
-
-logrun() {
-    # 执行命令，stdout+stderr 同时到终端和日志
-    "$@" 2>&1 | tee -a "$LOG"
-}
-
-step() {
-    echo "" | tee -a "$LOG"
-    echo "══════════ $1 ══════════" | tee -a "$LOG"
-}
-
-info()  { echo "[INFO]  $1" | tee -a "$LOG"; }
-pass()  { echo "[ OK ]  $1" | tee -a "$LOG"; }
-fail()  { echo "[FAIL]  $1" | tee -a "$LOG"; }
-
-wait_server() {
-    echo ""
-    echo ">>> 确认服务端已准备好，按 Enter 执行测试 <<<"
-    read -r _
-}
-
-next_exp() {
-    echo ""
-    echo "回到服务端按 Enter，然后回来按 Enter 进入下一实验..."
-    read -r _
-}
-
-# 测试 TLS（不用 logrun，直接捕获输出和退出码）
+# ── 测试函数 ──
 test_tls() {
     target="$1"; port="$2"; label="$3"
     log ""
     info "--- $label ---"
-    info "命令: curl -vk --connect-timeout 5 https://${target}:${port}"
+    info "curl -vk --connect-timeout 5 https://${target}:${port}"
     log ">>>>>>>>"
-    # 捕获输出到变量，保留真实退出码
     CURL_OUT=$(curl -vk --connect-timeout 5 "https://${target}:${port}" 2>&1)
     rc=$?
     log "$CURL_OUT"
@@ -61,27 +37,26 @@ test_tls() {
     else
         fail "$label -> 失败 (exit=$rc)"
     fi
-    # 额外标注具体错误类型
     if echo "$CURL_OUT" | grep -q "wrong version number"; then
-        info "  错误类型: wrong version number (收到非 TLS 数据)"
+        info "  错误: wrong version number (收到非 TLS 数据)"
     elif echo "$CURL_OUT" | grep -q "reset by peer"; then
-        info "  错误类型: Connection reset by peer"
+        info "  错误: Connection reset by peer (SNI 被拦截?)"
+    elif echo "$CURL_OUT" | grep -q "internal error"; then
+        info "  错误: tlsv1 alert internal error (服务端 TLS 异常)"
     elif echo "$CURL_OUT" | grep -q "Connection refused"; then
-        info "  错误类型: Connection refused (端口无服务)"
+        info "  错误: Connection refused (端口无服务)"
     elif echo "$CURL_OUT" | grep -q "timed out"; then
-        info "  错误类型: 超时"
+        info "  错误: 超时"
     fi
     log ""
 }
 
-# 测试纯 TCP（兼容 busybox nc：无 -w 参数，用 timeout 包装）
 test_tcp() {
     port="$1"; label="$2"
     log ""
     info "--- $label ---"
-    info "命令: nc ${SERVER_IP} ${port} (5s timeout)"
+    info "nc ${SERVER_IP} ${port} (5s timeout)"
     log ">>>>>>>>"
-    # busybox nc 不支持 -w，用 timeout 或后台+wait 替代
     if command -v timeout >/dev/null 2>&1; then
         RESULT=$(echo "test" | timeout 5 nc "$SERVER_IP" "$port" 2>&1)
         rc=$?
@@ -90,165 +65,280 @@ test_tcp() {
         NC_BG=$!
         sleep 3
         if kill -0 $NC_BG 2>/dev/null; then
-            kill $NC_BG 2>/dev/null
-            wait $NC_BG 2>/dev/null
-            RESULT="(timeout - nc still running after 3s)"
-            rc=1
+            kill $NC_BG 2>/dev/null; wait $NC_BG 2>/dev/null
+            RESULT="(timeout)"; rc=1
         else
-            wait $NC_BG
-            rc=$?
+            wait $NC_BG; rc=$?
             RESULT="(nc exited with $rc)"
         fi
     fi
     log "$RESULT"
     log "<<<<<<<<"
     log "exit_code=$rc"
-    if [ $rc -eq 0 ]; then
-        pass "$label -> 成功 (exit=$rc, 响应: $RESULT)"
+    if [ $rc -eq 0 ]; then pass "$label -> 成功"; else fail "$label -> 失败 (exit=$rc)"; fi
+    log ""
+}
+
+# ── snapshot ──
+cmd_snapshot() {
+    step "客户端环境快照"
+    log "时间: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+    log "主机: $(hostname 2>/dev/null || cat /proc/sys/kernel/hostname)"
+    logrun uname -a
+    logrun cat /etc/openwrt_release 2>/dev/null || true
+    log ""
+    info "--- 网络接口 ---"
+    logrun ip -4 addr show scope global
+    log ""
+    info "--- 默认路由 ---"
+    logrun ip route show default
+    log ""
+    info "--- 到 $SERVER_IP 的策略路由 ---"
+    ip rule show 2>/dev/null | grep "$SERVER_IP" | tee -a "$LOG" || log "(无)"
+    log ""
+    info "--- DNS: $SERVER_DOMAIN ---"
+    logrun nslookup "$SERVER_DOMAIN" 2>&1 || true
+    log ""
+    info "--- ping $SERVER_IP ---"
+    logrun ping -c 3 -W 3 "$SERVER_IP"
+    log ""
+    info "--- Tailscale ---"
+    logrun tailscale status
+    log ""
+    info "--- tailscale netcheck (30s timeout) ---"
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 30 tailscale netcheck 2>&1 | tee -a "$LOG" || log "(超时或失败)"
     else
-        fail "$label -> 失败 (exit=$rc)"
+        logrun tailscale netcheck
     fi
     log ""
 }
 
-# ═══════════════════════════════════════════
-log "┌──────────────────────────────────────────────┐"
-log "│  DERP 中继诊断 — 客户端 (gl-mt2500-3)       │"
-log "└──────────────────────────────────────────────┘"
-log "时间: $(date '+%Y-%m-%d %H:%M:%S %Z')"
-log "主机: $(hostname 2>/dev/null || cat /proc/sys/kernel/hostname)"
-log "日志: $LOG"
+# ── test N ──
+cmd_test() {
+    exp="$1"
+    case "$exp" in
+    1)
+        step "实验 1：纯 TCP 443"
+        test_tcp 443 "TCP 443 (无 derper)"
+        ;;
+    2)
+        step "实验 2：openssl s_server TLS 基线"
+        test_tls "$SERVER_IP" 443 "openssl 443 (IP)"
+        test_tls "$SERVER_DOMAIN" 443 "openssl 443 (域名)"
+        ;;
+    3)
+        step "实验 3：derper Go TLS 443"
+        test_tls "$SERVER_DOMAIN" 443 "derper 443 (域名)"
+        test_tls "$SERVER_IP" 443 "derper 443 (IP)"
+        ;;
+    4)
+        step "实验 4：openssl 443 + derper 8080"
+        test_tls "$SERVER_IP" 443 "openssl 443 + derper 8080 (IP)"
+        ;;
+    5)
+        step "实验 5：socat 443 → derper 8080"
+        test_tls "$SERVER_IP" 443 "socat→derper (IP)"
+        test_tls "$SERVER_DOMAIN" 443 "socat→derper (域名)"
+        info "--- DERP 健康检查 ---"
+        test_tls "$SERVER_DOMAIN" 443 "DERP latency-check (域名)"
+        ;;
+    6)
+        step "实验 6：TCP 12345 + derper 8080"
+        test_tcp 12345 "TCP 12345 + derper 8080"
+        ;;
+    *)
+        echo "未知实验: $exp (可选 1-6)"
+        return 1
+        ;;
+    esac
+}
 
-# ═══════════════════════════════════════════
-step "0. 客户端环境快照"
-# ═══════════════════════════════════════════
+# ── openclash: 开关对比测试 ──
+cmd_openclash() {
+    step "OpenClash 开关对比测试"
+    info "前提：服务端已运行 socat+derper (sh derp-diag-server.sh socat)"
+    log ""
 
-info "--- 系统 ---"
-logrun uname -a
-logrun cat /etc/openwrt_release 2>/dev/null || true
-log ""
+    info "=== 1/3 OpenClash 开启状态（当前） ==="
+    test_tls "$SERVER_IP" 443 "OC开启 IP"
+    test_tls "$SERVER_DOMAIN" 443 "OC开启 域名"
 
-info "--- 网络接口 (摘要) ---"
-logrun ip -4 addr show scope global
-log ""
+    log ""
+    info "=== 2/3 关闭 OpenClash ==="
+    info "执行: /etc/init.d/openclash stop"
+    /etc/init.d/openclash stop 2>&1 | tee -a "$LOG"
+    sleep 3
+    info "OpenClash 已关闭"
 
-info "--- 默认路由 ---"
-logrun ip route show default
-log ""
+    test_tls "$SERVER_IP" 443 "OC关闭 IP"
+    test_tls "$SERVER_DOMAIN" 443 "OC关闭 域名"
 
-info "--- 到 $SERVER_IP 的策略路由 ---"
-RULE=$(ip rule show 2>/dev/null | grep "$SERVER_IP")
-if [ -n "$RULE" ]; then
-    log "$RULE"
-else
-    log "(无针对 $SERVER_IP 的策略路由)"
-fi
-log ""
+    log ""
+    info "=== 3/3 恢复 OpenClash ==="
+    info "执行: /etc/init.d/openclash start"
+    /etc/init.d/openclash start 2>&1 | tee -a "$LOG"
+    info "OpenClash 已恢复"
 
-info "--- DNS 解析 $SERVER_DOMAIN ---"
-logrun nslookup "$SERVER_DOMAIN" 2>&1 || true
-log ""
+    log ""
+    step "OpenClash 测试结果汇总"
+    log "  OC开启 + IP:   看上方结果"
+    log "  OC开启 + 域名: 看上方结果"
+    log "  OC关闭 + IP:   看上方结果"
+    log "  OC关闭 + 域名: 看上方结果"
+    log ""
+    log "如果 OC关闭后域名测试成功 → OpenClash 是根因"
+    log "配置 OpenClash 放行 derp.wcdz.tech 即可解决"
+}
 
-info "--- ping $SERVER_IP ---"
-logrun ping -c 3 -W 3 "$SERVER_IP"
-log ""
+# ── all ──
+cmd_all() {
+    : > "$LOG"
+    cmd_snapshot
 
-info "--- Tailscale 状态 ---"
-logrun tailscale status
-log ""
+    for exp in 1 2 3 4 5 6; do
+        echo ""
+        echo ">>> 确认服务端已 setup $exp，按 Enter 开始测试 <<<"
+        read -r _
+        cmd_test "$exp"
+    done
 
-info "--- tailscale netcheck (30s timeout) ---"
-if command -v timeout >/dev/null 2>&1; then
-    timeout 30 tailscale netcheck 2>&1 | tee -a "$LOG" || log "(netcheck timed out or failed)"
-else
-    logrun tailscale netcheck
-fi
-log ""
+    step "实验后 Tailscale"
+    logrun tailscale status
+    logrun tailscale ping bj-ali-hb2 || true
+    log ""
+    step "完成"
+    log "日志: $LOG"
+}
 
-# ═══════════════════════════════════════════
-step "实验 1/6：纯 TCP 基线（无 TLS 无 derper）"
-# ═══════════════════════════════════════════
+# ── sni: SNI DPI 隔离测试 ──
+cmd_sni() {
+    step "SNI DPI 隔离测试"
+    info "前提：服务端 socat+derper 在运行"
+    log ""
 
-info "目的：TCP 443 端口基础连通性"
-wait_server
-test_tcp 443 "实验1: TCP 443 (无 derper)"
-next_exp
+    info "=== 1. IP 直连（无 SNI）==="
+    test_tls "$SERVER_IP" 443 "IP 直连（无域名 SNI）"
 
-# ═══════════════════════════════════════════
-step "实验 2/6：openssl s_server TLS 基线"
-# ═══════════════════════════════════════════
+    info "=== 2. 真实域名 ==="
+    test_tls "$SERVER_DOMAIN" 443 "域名 $SERVER_DOMAIN"
 
-info "目的：最简单的 OpenSSL TLS"
-wait_server
-test_tls "$SERVER_IP" 443 "实验2: openssl s_server 443 (IP)"
-test_tls "$SERVER_DOMAIN" 443 "实验2: openssl s_server 443 (域名)"
-next_exp
+    info "=== 3. --resolve 强制域名走真实 IP（排除 DNS）==="
+    log ""
+    info "--- --resolve $SERVER_DOMAIN ---"
+    info "curl -vk --connect-timeout 5 --resolve ${SERVER_DOMAIN}:443:${SERVER_IP} https://${SERVER_DOMAIN}:443"
+    log ">>>>>>>>"
+    CURL_OUT=$(curl -vk --connect-timeout 5 --resolve "${SERVER_DOMAIN}:443:${SERVER_IP}" "https://${SERVER_DOMAIN}:443" 2>&1)
+    rc=$?
+    log "$CURL_OUT"
+    log "<<<<<<<<"
+    log "exit_code=$rc"
+    if [ $rc -eq 0 ]; then pass "--resolve 域名 -> 成功"; else fail "--resolve 域名 -> 失败 (exit=$rc)"; fi
+    log ""
 
-# ═══════════════════════════════════════════
-step "实验 3/6：derper 原始配置 on 443"
-# ═══════════════════════════════════════════
+    info "=== 4. 无关域名 → 同 IP（测试是否所有域名都被拦）==="
+    log ""
+    info "--- --resolve hello.example.org ---"
+    CURL_OUT=$(curl -vk --connect-timeout 5 --resolve "hello.example.org:443:${SERVER_IP}" "https://hello.example.org:443" 2>&1)
+    rc=$?
+    log "exit_code=$rc"
+    if [ $rc -eq 0 ]; then pass "无关域名 -> 成功"; else fail "无关域名 -> 失败 (exit=$rc)"; fi
+    log ""
 
-info "目的：复现 derper Go TLS 外部连接问题"
-wait_server
-test_tls "$SERVER_DOMAIN" 443 "实验3: derper 443 (域名)"
-test_tls "$SERVER_IP" 443 "实验3: derper 443 (IP)"
-next_exp
+    step "SNI 测试结论"
+    log "  IP 通 + 所有域名不通 → IP 被 DPI 标记，所有域名 SNI 被拦"
+    log "  IP 通 + 特定域名不通 → 该域名/关键词被 DPI 拦截"
+    log "  IP 通 + 域名也通     → 无 SNI DPI 干扰"
+}
 
-# ═══════════════════════════════════════════
-step "实验 4/6：derper 8080 + openssl TLS 443"
-# ═══════════════════════════════════════════
+# ── killclash: 强制杀 OpenClash 后测试 ──
+cmd_killclash() {
+    step "强制杀 OpenClash 测试"
+    info "目的：排除 OpenClash 对 TLS 的干扰"
+    log ""
 
-info "目的：derper 在后台(8080)时，openssl TLS 是否受影响"
-wait_server
-test_tls "$SERVER_IP" 443 "实验4: openssl 443 + derper 8080 后台"
-next_exp
+    info "=== 杀掉 OpenClash（watchdog + clash）==="
+    kill $(pgrep -f openclash_watchdog) 2>/dev/null
+    sleep 1
+    killall clash 2>/dev/null
+    sleep 2
+    if ps | grep -i clash | grep -v grep > /dev/null; then
+        fail "clash 仍在运行"
+    else
+        pass "clash 已停止"
+    fi
+    log ""
 
-# ═══════════════════════════════════════════
-step "实验 5/6：derper 8080 + socat TLS 443->8080"
-# ═══════════════════════════════════════════
+    info "=== 测试 ==="
+    test_tls "$SERVER_IP" 443 "OC死亡 IP"
+    test_tls "$SERVER_DOMAIN" 443 "OC死亡 域名"
 
-info "目的：socat TLS 终结 + derper HTTP 端到端验证"
-wait_server
-test_tls "$SERVER_IP" 443 "实验5: socat 443->derper 8080 (IP)"
-test_tls "$SERVER_DOMAIN" 443 "实验5: socat 443->derper 8080 (域名)"
+    info "=== 恢复 OpenClash ==="
+    /etc/init.d/openclash restart 2>&1 | tee -a "$LOG"
+    log ""
 
-log ""
-info "--- 额外：DERP 健康检查 ---"
-info "命令: curl -vk --connect-timeout 5 https://${SERVER_DOMAIN}:443/derp/latency-check"
-log ">>>>>>>>"
-logrun curl -vk --connect-timeout 5 "https://${SERVER_DOMAIN}:443/derp/latency-check"
-log "<<<<<<<<"
-log ""
-next_exp
+    step "killclash 结论"
+    log "  杀 OC 后域名通 → OpenClash 是原因"
+    log "  杀 OC 后域名仍不通 → 非 OpenClash（ISP DPI 等）"
+}
 
-# ═══════════════════════════════════════════
-step "实验 6/6：derper 运行时纯 TCP 12345"
-# ═══════════════════════════════════════════
+# ── verify: 部署后端到端验证 ──
+cmd_verify() {
+    step "DERP 端到端验证"
+    log "时间: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+    log ""
 
-info "目的：derper 在 8080 运行时，其他端口 TCP 是否受干扰"
-wait_server
-test_tcp 12345 "实验6: TCP 12345 + derper 8080 后台"
-next_exp
+    info "--- tailscale netcheck ---"
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 30 tailscale netcheck 2>&1 | tee -a "$LOG" || log "(超时)"
+    else
+        logrun tailscale netcheck
+    fi
+    log ""
 
-# ═══════════════════════════════════════════
-step "实验后 Tailscale 状态"
-# ═══════════════════════════════════════════
+    info "--- tailscale ping istoreos ---"
+    logrun tailscale ping -c 5 istoreos 2>&1 || logrun tailscale ping istoreos
+    log ""
 
-info "--- tailscale status ---"
-logrun tailscale status
-log ""
+    info "--- tailscale ping bj-ali-hb2 ---"
+    logrun tailscale ping -c 5 bj-ali-hb2 2>&1 || logrun tailscale ping bj-ali-hb2
+    log ""
 
-info "--- tailscale ping bj-ali-hb2 ---"
-logrun tailscale ping bj-ali-hb2 || true
-log ""
+    info "--- tailscale status (relay 信息) ---"
+    logrun tailscale status | grep -E '(istoreos|bj-ali-hb2)'
+    log ""
 
-# ═══════════════════════════════════════════
-step "诊断完成"
-# ═══════════════════════════════════════════
+    step "验收标准"
+    log "  netcheck: ali-bj 延迟 < 20ms"
+    log "  ping istoreos: via DERP(ali-bj) < 20ms"
+}
 
-log ""
-log "客户端日志: $LOG"
-log ""
-log "取回日志（从 22 服务器）："
-log "  scp root@192.168.2.123:$LOG /tmp/derp-diag-client.log"
-log "  scp root@39.102.98.79:/tmp/derp-diag-server.log /tmp/"
+# ── 主入口 ──
+case "${1:-help}" in
+    all)        cmd_all ;;
+    test)       cmd_test "${2:?用法: test <1-6>}" ;;
+    openclash)  cmd_openclash ;;
+    sni)        cmd_sni ;;
+    killclash)  cmd_killclash ;;
+    verify)     cmd_verify ;;
+    snapshot)   cmd_snapshot ;;
+    help|*)
+        cat <<'USAGE'
+DERP 中继诊断 — 客户端
+
+用法：
+  sh derp-diag-client.sh all              全部 6 个实验顺序执行
+  sh derp-diag-client.sh test <1-6>       单项实验测试
+  sh derp-diag-client.sh openclash        OpenClash init 开关对比
+  sh derp-diag-client.sh killclash        强制杀 clash 进程后测试
+  sh derp-diag-client.sh sni              SNI DPI 隔离测试
+  sh derp-diag-client.sh verify           部署后端到端验证
+  sh derp-diag-client.sh snapshot         客户端环境快照
+
+实验列表：
+  1  纯 TCP 443          2  openssl TLS 基线
+  3  derper Go TLS       4  openssl + derper 隔离
+  5  socat → derper      6  TCP + derper 交叉
+USAGE
+        ;;
+esac
