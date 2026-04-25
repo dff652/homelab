@@ -152,6 +152,38 @@ diagnose_conn() {
   echo "========== auth.openai.com 详细握手(前40行) =========="
   bash -lc 'curl -v --max-time 20 https://auth.openai.com 2>&1 | head -40' || true
   echo
+
+  echo "========== GitHub 解析 =========="
+  getent ahosts github.com || true
+  echo
+  getent ahosts codeload.github.com || true
+  echo
+
+  echo "========== GitHub TLS 握手 (curl/OpenSSL 路径) =========="
+  curl -4 -I --max-time 15 https://github.com || true
+  echo
+  curl -4 -I --max-time 15 https://codeload.github.com || true
+  echo
+
+  echo "========== git TLS 栈检测 =========="
+  if cmd_exists git; then
+    local git_http_backend
+    git_http_backend=$(ldd "$(git --exec-path)/git-remote-http" 2>/dev/null | grep -Eio 'libcurl[^ ]*' | head -n1 || true)
+    echo "git-remote-http 链接的 libcurl: ${git_http_backend:-未知}"
+    if echo "$git_http_backend" | grep -qi gnutls; then
+      echo "[NOTE] 当前 git 走 GnuTLS，对 TLS 握手中断的容忍度低于 OpenSSL。"
+    fi
+  fi
+  echo
+
+  echo "========== git ls-remote 真实拉取测试 =========="
+  # git ls-remote 会走和 git clone 完全相同的 TLS 栈，比 curl HEAD 更接近实际场景
+  set +e
+  GIT_TERMINAL_PROMPT=0 timeout 20 git ls-remote https://github.com/git/git.git HEAD 2>&1 | head -5
+  local git_ls_code=$?
+  set -e
+  echo "[git ls-remote 退出码: ${git_ls_code}]"
+  echo
   echo "[DONE] 公网与连通性检测完成。"
 }
 
@@ -208,6 +240,27 @@ print_conn_conclusion() {
      conn_v6="[WARN] IPv6 连通性: IPv6 依然处于活跃或连接成功状态(退出码:0)，可能会导致分流泄漏！"
   fi
   echo "$conn_v6"
+
+  # GitHub 连通性 — curl HEAD 与 git ls-remote 双重判定
+  local gh_curl_ok=0
+  if curl -4 -I --max-time 10 https://github.com 2>&1 | grep -qE "HTTP/[12](\.[01])? (200|301|302)"; then
+    gh_curl_ok=1
+  fi
+
+  set +e
+  GIT_TERMINAL_PROMPT=0 timeout 15 git ls-remote https://github.com/git/git.git HEAD >/dev/null 2>&1
+  local gh_git_code=$?
+  set -e
+
+  if [[ $gh_curl_ok -eq 1 && $gh_git_code -eq 0 ]]; then
+    echo "[OK] GitHub 连通性: curl 与 git ls-remote 均成功，可正常 git clone。"
+  elif [[ $gh_curl_ok -eq 1 && $gh_git_code -ne 0 ]]; then
+    echo "[!] GitHub 连通性: curl 通过但 git ls-remote 失败(退出码:${gh_git_code})。常见原因：git 链接的 GnuTLS 在 TLS 握手中途被 RST。建议改用 SSH 协议或将 git 切到 OpenSSL 版本。"
+  elif [[ $gh_curl_ok -eq 0 && $gh_git_code -eq 0 ]]; then
+    echo "[!] GitHub 连通性: git ls-remote 成功但 curl HEAD 失败，可能是 curl 走了不同代理或被拦截，git 操作本身可用。"
+  else
+    echo "[!] GitHub 连通性: curl 与 git ls-remote 均失败(git退出码:${gh_git_code})。可能原因：DNS 污染 / TLS SNI 阻断 / 出口网络被拦截。建议改用 SSH 协议(ssh.github.com:443) 或配置 GitHub 代理。"
+  fi
 }
 
 print_all_conclusions() {
