@@ -19,7 +19,7 @@ homelab/
 | 入口 | 用途 |
 |---|---|
 | [`pve/setup_vm.sh`](pve/setup_vm.sh) | Ubuntu 24.04 VM 一键初始化（换源、静态 IP、SSH、Guest Agent、Docker、nvm） |
-| [`pve/codex/codex_net_fix.sh`](pve/codex/codex_net_fix.sh) | 网络诊断与一键修复（OpenAI、GitHub、DNS、IPv6） |
+| [`pve/network/codex_net_fix.sh`](pve/network/codex_net_fix.sh) | 网络诊断与一键修复（OpenAI、GitHub、DNS、IPv6） |
 | [`pve/Proxmox VE 硬件部署与性能调优全指南.md`](pve/Proxmox%20VE%20硬件部署与性能调优全指南.md) | PVE 硬件 / 性能调优笔记 |
 
 ### `router/` — MT2500 (OpenWrt) 旁路由
@@ -42,9 +42,9 @@ homelab/
 
 ## 路径目录指引
 
-**遇到 GitHub 访问问题** → 先看 [`docs/GitHub_FakeIP与SSH-HTTPS双通道排查.md`](docs/GitHub_FakeIP与SSH-HTTPS双通道排查.md)，再跑 [`pve/codex/codex_net_fix.sh`](pve/codex/codex_net_fix.sh) 诊断。
+**遇到 GitHub 访问问题** → 先看 [`docs/GitHub_FakeIP与SSH-HTTPS双通道排查.md`](docs/GitHub_FakeIP与SSH-HTTPS双通道排查.md)，再跑 [`pve/network/codex_net_fix.sh`](pve/network/codex_net_fix.sh) 诊断。
 
-**新建 VM** → [`pve/setup_vm.sh`](pve/setup_vm.sh) 一键完成，跑完后如需 Codex/AI 工具，再运行 [`pve/codex/codex_net_fix.sh`](pve/codex/codex_net_fix.sh)。
+**新建 VM** → [`pve/setup_vm.sh`](pve/setup_vm.sh) 一键完成，跑完后如需 Codex/AI 工具，再运行 [`pve/network/codex_net_fix.sh`](pve/network/codex_net_fix.sh)。
 
 **OpenClash 规则改坏** → 参考 [`router/docs/DNS链路方案_终极架构.md`](router/docs/DNS链路方案_终极架构.md) + [`docs/GitHub_FakeIP与SSH-HTTPS双通道排查.md`](docs/GitHub_FakeIP与SSH-HTTPS双通道排查.md) 的 §4 规则。
 
@@ -56,5 +56,5 @@ homelab/
 
 - **不在仓里存敏感信息**：API key、私钥、设备口令等一律走环境变量或本地 `.env`（`.gitignore` 兜底）
 - **跨设备问题写 `docs/`，不要塞进 `pve/` 或 `router/`**：保持子项目语义边界
-- **诊断脚本要带"结论判定"**：见 `pve/codex/codex_net_fix.sh` 的 `print_*_conclusion` 函数风格——不仅采集，还自动给出 `[OK]` / `[!]` / `[WARN]` 解读
+- **诊断脚本要带"结论判定"**：见 `pve/network/codex_net_fix.sh` 的 `print_*_conclusion` 函数风格——不仅采集，还自动给出 `[OK]` / `[!]` / `[WARN]` 解读
 - **GUI 改的配置（如 OpenClash 规则）落档进仓**：避免改了忘记，未来回滚无据可查

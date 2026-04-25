@@ -79,7 +79,7 @@ Connection closed by 198.18.0.88 port 443
 
 ### 3.1 既有诊断脚本盲区
 
-[`pve/codex/codex_net_fix.sh`](../pve/codex/codex_net_fix.sh) 只测了 `auth.openai.com` / `api.openai.com`，**没测 GitHub**，所以一开始无法用脚本复现。
+[`pve/network/codex_net_fix.sh`](../pve/network/codex_net_fix.sh) 只测了 `auth.openai.com` / `api.openai.com`，**没测 GitHub**，所以一开始无法用脚本复现。
 
 **修复**：在 `diagnose_conn` 中追加：
 - GitHub DNS 解析（`getent ahosts github.com`、`codeload.github.com`）
@@ -270,7 +270,7 @@ GitHub 同时需要 SSH 和 HTTPS 都通，所以这两层都得对齐：DNS 给
 - 网络出口路径不同（不同 VM 走不同 NAT/路由）
 - 代理节点稳定性变化（4 月初的不稳定节点已替换）
 
-**启示**：直连 vs 代理的选择**不是恒定真理**，依赖当前 GFW 与代理节点的状态。建议每次出现 GitHub 访问异常时重新跑一次 [`pve/codex/codex_net_fix.sh diagnose`](../pve/codex/codex_net_fix.sh)（含本次新增的 GitHub 检测块）做一次现状判定。
+**启示**：直连 vs 代理的选择**不是恒定真理**，依赖当前 GFW 与代理节点的状态。建议每次出现 GitHub 访问异常时重新跑一次 [`pve/network/codex_net_fix.sh diagnose`](../pve/network/codex_net_fix.sh)（含本次新增的 GitHub 检测块）做一次现状判定。
 
 ---
 
@@ -285,7 +285,7 @@ GitHub 同时需要 SSH 和 HTTPS 都通，所以这两层都得对齐：DNS 给
 
 ## 9. 工具引用
 
-- [`pve/codex/codex_net_fix.sh`](../pve/codex/codex_net_fix.sh) —— 含本次新增的 GitHub TLS / git ls-remote 双探针检测
+- [`pve/network/codex_net_fix.sh`](../pve/network/codex_net_fix.sh) —— 含本次新增的 GitHub TLS / git ls-remote 双探针检测
 - [`router/scripts/diag-github.sh`](../router/scripts/diag-github.sh) —— 路由器侧的 GitHub 链路诊断
 - [`router/docs/GitHub_HTTPS推送失败排查记录.md`](../router/docs/GitHub_HTTPS推送失败排查记录.md) —— 4 月 14 日的前次记录（结论已被本次推翻）
 - [`router/docs/DNS链路方案_终极架构.md`](../router/docs/DNS链路方案_终极架构.md) —— DNS 链路全景
@@ -294,6 +294,6 @@ GitHub 同时需要 SSH 和 HTTPS 都通，所以这两层都得对齐：DNS 给
 
 ## 10. 待办与优化方向
 
-- [ ] 周期性验证：每 30 天跑一次 `pve/codex/codex_net_fix.sh diagnose-github`，监控直连 vs 代理状态变化
-- [x] ~~把 §5 的 5 项检查脚本化~~ → 已落地为 [`pve/codex/codex_net_fix.sh diagnose-github`](../pve/codex/codex_net_fix.sh)（CLI 子命令 + 交互菜单选项 5）
+- [ ] 周期性验证：每 30 天跑一次 `pve/network/codex_net_fix.sh diagnose-github`，监控直连 vs 代理状态变化
+- [x] ~~把 §5 的 5 项检查脚本化~~ → 已落地为 [`pve/network/codex_net_fix.sh diagnose-github`](../pve/network/codex_net_fix.sh)（CLI 子命令 + 交互菜单选项 5）
 - [ ] 考虑给 router 侧加一个 OpenClash 规则版本控制（git 跟踪 `/etc/openclash/custom/openclash_custom_rules.list`），避免 GUI 改完忘记同步进仓
