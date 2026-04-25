@@ -294,6 +294,6 @@ GitHub 同时需要 SSH 和 HTTPS 都通，所以这两层都得对齐：DNS 给
 
 ## 10. 待办与优化方向
 
-- [ ] 周期性验证：每 30 天跑一次本节 §5 的 5 项检查，监控直连 vs 代理状态变化
-- [ ] 把 §5 的 5 项检查脚本化，作为 `pve/codex/codex_net_fix.sh diagnose-github` 子命令
+- [ ] 周期性验证：每 30 天跑一次 `pve/codex/codex_net_fix.sh diagnose-github`，监控直连 vs 代理状态变化
+- [x] ~~把 §5 的 5 项检查脚本化~~ → 已落地为 [`pve/codex/codex_net_fix.sh diagnose-github`](../pve/codex/codex_net_fix.sh)（CLI 子命令 + 交互菜单选项 5）
 - [ ] 考虑给 router 侧加一个 OpenClash 规则版本控制（git 跟踪 `/etc/openclash/custom/openclash_custom_rules.list`），避免 GUI 改完忘记同步进仓

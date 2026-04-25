@@ -8,6 +8,7 @@ usage() {
 用法:
   ./codex_net_fix.sh                        进入交互菜单（推荐）
   ./codex_net_fix.sh diagnose               采集网络、DNS、IPv4/IPv6、OpenAI 连通性信息
+  ./codex_net_fix.sh diagnose-github        快速检测 GitHub 双通道(HTTPS+SSH)与稳定性
   ./codex_net_fix.sh disable-ipv6-temp      临时关闭 IPv6（重启失效）
   ./codex_net_fix.sh disable-ipv6-permanent 永久关闭 IPv6（修改 /etc/sysctl.conf）
   ./codex_net_fix.sh enable-ipv6-temp       临时启用 IPv6
@@ -263,6 +264,111 @@ print_conn_conclusion() {
   fi
 }
 
+diagnose_github() {
+  echo "============== GitHub 双通道连通性检测 =============="
+  echo "（依据 docs/GitHub_FakeIP与SSH-HTTPS双通道排查.md §5）"
+  echo
+
+  echo "----- 1. DNS 解析 -----"
+  local gh_ip ssh_ip
+  gh_ip=$(getent ahosts github.com 2>/dev/null | awk '{print $1}' | head -1)
+  ssh_ip=$(getent ahosts ssh.github.com 2>/dev/null | awk '{print $1}' | head -1)
+  echo "github.com     → ${gh_ip:-(无)}"
+  echo "ssh.github.com → ${ssh_ip:-(无)}"
+  echo
+
+  echo "----- 2. HTTPS curl 单次握手 -----"
+  set +e
+  local curl_code
+  curl_code=$(curl -o /dev/null -s --max-time 10 -w '%{http_code}' https://github.com 2>/dev/null)
+  set -e
+  echo "HTTP 状态码: ${curl_code}"
+  echo
+
+  echo "----- 3. HTTPS git ls-remote 真实 git 路径 -----"
+  set +e
+  GIT_TERMINAL_PROMPT=0 timeout 15 git ls-remote https://github.com/git/git.git HEAD 2>&1 | head -3
+  local git_https_code=$?
+  set -e
+  echo "[退出码: ${git_https_code}]"
+  echo
+
+  echo "----- 4. SSH 连通性 (ssh.github.com:443) -----"
+  set +e
+  local ssh_out ssh_exit
+  ssh_out=$(ssh -T -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=accept-new git@github.com 2>&1)
+  ssh_exit=$?
+  set -e
+  echo "$ssh_out"
+  echo "[退出码: ${ssh_exit}（认证成功的预期退出码是 1）]"
+  echo
+
+  echo "----- 5. HTTPS 稳定性 (5 次连续) -----"
+  local i pass=0 code
+  for i in 1 2 3 4 5; do
+    set +e
+    code=$(curl -o /dev/null -s --max-time 8 -w '%{http_code}' https://github.com 2>/dev/null)
+    set -e
+    echo "  第 $i 次: HTTP ${code}"
+    case "$code" in 200|301|302) pass=$((pass+1)) ;; esac
+  done
+  echo
+
+  echo "============== 结论 =============="
+  print_github_conclusion "$gh_ip" "$curl_code" "$git_https_code" "$ssh_exit" "$ssh_out" "$pass"
+  echo "=================================="
+}
+
+print_github_conclusion() {
+  local gh_ip="$1" curl_code="$2" git_https="$3" ssh_exit="$4" ssh_out="$5" stab="$6"
+
+  # DNS
+  case "$gh_ip" in
+    198.18.*|198.19.*)
+      echo "[!] DNS: github.com 解析为 fake-IP (${gh_ip})。SSH 将无法工作 → OpenClash Fake-IP Filter 加 +.github.com" ;;
+    "")
+      echo "[!] DNS: github.com 解析失败（DNS 链路异常）" ;;
+    *)
+      echo "[OK] DNS: github.com → ${gh_ip} (真实 IP，Fake-IP Filter 已生效)" ;;
+  esac
+
+  # HTTPS curl
+  case "$curl_code" in
+    200|301|302) echo "[OK] HTTPS curl: HTTP ${curl_code}" ;;
+    000)         echo "[!] HTTPS curl: 连接/握手失败 → 流量可能直连撞 GFW。需在 OpenClash 加 'DOMAIN-SUFFIX,github.com,<代理组>' 规则" ;;
+    *)           echo "[!] HTTPS curl: HTTP ${curl_code} (异常状态码)" ;;
+  esac
+
+  # git over HTTPS
+  if [[ "$git_https" == "0" ]]; then
+    echo "[OK] git over HTTPS: 可正常 clone/pull/push"
+  else
+    echo "[!] git over HTTPS 失败 (退出码 ${git_https})。即使 curl OK，git 走 GnuTLS 仍可能因握手中断失败 → 改用 SSH 协议"
+  fi
+
+  # SSH
+  if echo "$ssh_out" | grep -q "successfully authenticated"; then
+    echo "[OK] SSH (ssh.github.com:443): 认证成功"
+  elif echo "$ssh_out" | grep -qE "Connection closed by 198\.18\."; then
+    echo "[!] SSH: 连接到 fake-IP 后被关闭 → OpenClash Fake-IP Filter 必须加 +.github.com"
+  elif echo "$ssh_out" | grep -q "Permission denied"; then
+    echo "[!] SSH: 公钥未挂到 GitHub 或本机 ~/.ssh 无对应私钥"
+  elif echo "$ssh_out" | grep -qE "Could not resolve|Connection timed out|No route to host"; then
+    echo "[!] SSH: 网络不通（解析/路由/防火墙）"
+  else
+    echo "[!] SSH: 退出码 ${ssh_exit}，未识别状态。详查上方 ssh 输出"
+  fi
+
+  # 稳定性
+  if [[ "$stab" == "5" ]]; then
+    echo "[OK] HTTPS 稳定性: 5/5 全通"
+  elif [[ "$stab" -ge 3 ]]; then
+    echo "[WARN] HTTPS 稳定性: ${stab}/5 抖动。代理节点或 GFW 状态可能在变化"
+  else
+    echo "[!] HTTPS 稳定性: ${stab}/5 严重不稳。检查 OpenClash 规则与代理后端"
+  fi
+}
+
 print_all_conclusions() {
   echo
   echo "============== 最终自动诊断结论 =============="
@@ -503,15 +609,17 @@ interactive_menu() {
         echo "  2) 仅诊断 系统与基础网络"
         echo "  3) 仅诊断 DNS与代理配置"
         echo "  4) 仅诊断 公网出口与连通性"
+        echo "  5) 仅诊断 GitHub 双通道(HTTPS+SSH)与稳定性"
         echo "  0) 返回主菜单"
         echo "========================================"
-        read -rp "请输入诊断选项 [0-4] 默认[1]: " diag_choice
+        read -rp "请输入诊断选项 [0-5] 默认[1]: " diag_choice
         if [[ -z "$diag_choice" ]]; then diag_choice="1"; fi
         case "$diag_choice" in
           1) diagnose; break ;;
           2) diagnose_sys_net_only; break ;;
           3) diagnose_proxy_dns_only; break ;;
           4) diagnose_conn_only; break ;;
+          5) diagnose_github; break ;;
           0) continue ;;
           *) echo "[ERROR] 无效的诊断选项。"; continue ;;
         esac
@@ -539,6 +647,7 @@ main() {
   local action="${1:-}"
   case "$action" in
     diagnose) diagnose ;;
+    diagnose-github) diagnose_github ;;
     disable-ipv6-temp) disable_ipv6_temp ;;
     disable-ipv6-permanent) disable_ipv6_permanent ;;
     enable-ipv6-temp) enable_ipv6_temp ;;
