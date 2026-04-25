@@ -1,0 +1,86 @@
+# 磁盘健康与性能分析工具 (Disk Health Analyzer)
+
+一个用于 Linux 系统的轻量级、交互式磁盘健康状态检测与读写测速脚本。本工具能够智能识别并解析 eMMC、NVMe SSD 以及 SATA HDD/SSD 的底层 S.M.A.R.T. 与运行状态数据，为您提供直观的可视化健康度报告。
+
+## 🌟 核心功能
+
+- **智能硬件识别**：自动区分 SATA/SAS、NVMe、eMMC 以及 RAID 控制器导出的逻辑盘，针对不同设备采用不同解析策略。
+- **深度健康分析**：
+  - **SATA/机械硬盘**：读取通电时间、当前温度、重映射扇区（物理坏道报警）、待处理扇区以及寿命百分比。
+  - **NVMe 固态硬盘**：精确解析已用寿命百分比、写入总量/读取量、通电次数，并支持多传感器温度读取（NAND 温度 / 主控温度）。
+  - **eMMC 存储**：读取底层 SLC/MLC 区域擦写消耗，估算 eMMC 芯片寿命。
+- **RAID 场景支持（PERC/MegaRAID）**：
+  - 自动识别 RAID 逻辑盘并给出提示。
+  - 使用 `smartctl -d megaraid,N` / `sat+megaraid,N` 只读扫描物理盘 SMART 信息（型号、序列号、介质类型、温度、健康状态等）。
+  - 明确提示“控制器级扫描”边界，避免误解为逻辑盘与物理盘一一映射。
+- **高精度性能测速**：
+  - 自动选择可写且空间充足的挂载点进行测速，并自动避开引导分区（如 `/boot/efi`）。
+  - RAID 盘支持两种模式：`只读测速`（推荐）和 `读写测速`。
+  - 读写测速支持缓存策略选择，默认不清缓存，减少对在线业务的影响。
+  - **智能 fio 测速**：当系统安装了 `fio` 工具时，优先调用 `libaio` 引擎和 `direct=1` 进行原生极致的裸盘级顺序读写测速。
+  - **dd 兼容测速**：如果没有 `fio`，则智能降级使用 `dd` 兼容模式进行测速。
+- **手动依赖管理**：
+  - 主动拦截并校验系统底层命令 (`lsblk`, `df`, `awk` 等)。
+  - 启动时仅检查依赖状态，不自动安装；由用户在菜单中手动执行安装/卸载决策。
+  - 支持 `apt` (Debian/Ubuntu/Armbian)、`yum` (CentOS/RH)、`pacman` (Arch 系)、`apk` (Alpine) 安装/卸载 `smartmontools`。
+
+## 🚀 快速开始
+
+### 运行环境
+- **操作系统**：Linux 通用 (Debian/Ubuntu, CentOS/RHEL, Arch, Alpine 等)
+- **权限要求**：因为需要跨文件系统读取底层硬件信息，**必须以 `root` 权限 (或 `sudo`) 运行**。
+
+### 运行方式
+```bash
+# 克隆仓库并进入目录
+git clone https://github.com/dff652/disk-health-analyzer.git
+cd disk-health-analyzer
+
+# 赋予执行权限
+chmod +x disk_analyzer.sh
+
+# 运行脚本
+sudo ./disk_analyzer.sh
+```
+
+## 🛠 使用说明
+
+脚本采用交互式命令行界面：
+1. **选择磁盘（低风险）**：输入 `1` 扫描并选择目标磁盘。默认过滤 `loop/ram/zram` 等虚拟设备。
+2. **查看寿命与健康度（低风险）**：输入 `2` 输出健康指标和可视化进度条。
+   - 若为 RAID 逻辑盘，会自动执行物理盘 SMART 扫描并展示结果。
+3. **读写性能测试（中风险）**：输入 `3` 进入测速流程。
+   - RAID 盘：先确认风险，再选择 `只读测速`（推荐）或 `读写测速`。
+   - 读写测速：会写入 100MB 临时文件，支持缓存策略选择（默认不清缓存）。
+4. **依赖管理（高风险）**：输入 `4` 进入 `smartmontools` 的安装/卸载菜单（系统级操作）。
+5. **NVMe 温度观察（低风险）**：输入 `5` 对已选 NVMe 设备进行连续只读监控（支持采样间隔和采样次数配置，`Ctrl+C` 可中断）。
+   - 可选保存 CSV（默认保存），便于后续做趋势分析。
+   - 观察结束后可使用 Python 脚本绘图：
+     - `python3 scripts/plot_nvme_temperature.py --input <csv文件路径>`
+6. 随时输入 `q` 退出脚本。
+
+## ⚠️ 注意事项
+- RAID 物理盘扫描属于只读查询，通常安全；但扫描结果是控制器级视角，可能不与单个逻辑盘一一对应。
+- 读写测速会产生真实 I/O 压力，建议在业务低峰执行。阵列处于重建/降级时不建议测速。
+- 读写测速采用 100MB 级别测试数据，会创建临时文件并在正常/中断路径下自动清理。
+- 需要磁盘至少存在一个可写挂载点，且剩余空间不少于 200MB；脚本会自动避开引导分区。
+- OpenWrt 等精简系统通常缺少 `bash/lsblk/smartctl`，不保证开箱即用。
+- **数据无价**：本工具仅提供状态估算和参考，发现磁盘报错、重映射扇区增加等异常时请尽快备份重要数据。
+
+## 🧪 排查记录
+- NVMe 温度误报排查、交叉验证实验与结论见：
+  - [`docs/nvme-temperature-validation.md`](docs/nvme-temperature-validation.md)
+
+## 🗺 规划与待办
+- 后续功能规划见：
+  - [`docs/TODO.md`](docs/TODO.md)
+
+## 📈 可视化
+- 监控数据 CSV 绘图脚本：
+  - `scripts/plot_nvme_temperature.py`
+- 用法示例：
+  - `python3 scripts/plot_nvme_temperature.py --input ./logs/nvme_monitor_nvme0n1_20260228_120000.csv`
+  - 可选输出路径：`--output ./logs/nvme0_plot.png`
+
+## 📜 许可证
+供技术交流与测试使用。
